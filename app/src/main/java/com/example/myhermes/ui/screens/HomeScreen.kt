@@ -15,14 +15,19 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.myhermes.data.model.MessageSender
 import com.example.myhermes.ui.components.ChatMessageItem
 import com.example.myhermes.ui.components.GeminiInputBar
 import com.example.myhermes.ui.components.GeminiTopBar
 import com.example.myhermes.ui.components.ModelSelectorSheet
 import com.example.myhermes.ui.components.NavigationDrawerContent
+import com.example.myhermes.ui.components.VoiceModeDialog
 import com.example.myhermes.ui.components.WelcomeSuggestions
 import com.example.myhermes.ui.viewmodel.MainViewModel
 import kotlinx.coroutines.launch
@@ -36,6 +41,7 @@ fun HomeScreen(
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val coroutineScope = rememberCoroutineScope()
     val listState = rememberLazyListState()
+    var isVoiceModeActive by remember { mutableStateOf(false) }
 
     // Auto-scroll to bottom when messages list updates
     LaunchedEffect(uiState.messages.size, uiState.messages.lastOrNull()?.text) {
@@ -67,6 +73,9 @@ fun HomeScreen(
                     },
                     onModelSelectorClick = {
                         viewModel.setModelSheetVisible(true)
+                    },
+                    onVoiceModeClick = {
+                        isVoiceModeActive = true
                     }
                 )
             },
@@ -133,6 +142,21 @@ fun HomeScreen(
                     },
                     onDismiss = {
                         viewModel.setModelSheetVisible(false)
+                    }
+                )
+            }
+
+            // Voice Mode Interactive Dialog
+            if (isVoiceModeActive) {
+                val lastAiMessage = uiState.messages.lastOrNull { it.sender == MessageSender.HERMES }?.text
+                VoiceModeDialog(
+                    isGenerating = uiState.isGenerating,
+                    lastAiMessage = lastAiMessage,
+                    onSendMessage = { prompt ->
+                        viewModel.sendMessage(prompt)
+                    },
+                    onDismiss = {
+                        isVoiceModeActive = false
                     }
                 )
             }

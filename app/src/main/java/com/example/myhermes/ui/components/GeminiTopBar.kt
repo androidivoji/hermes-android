@@ -15,6 +15,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -35,6 +36,7 @@ fun GeminiTopBar(
     selectedModel: HermesModel,
     onMenuClick: () -> Unit,
     onModelSelectorClick: () -> Unit,
+    onVoiceModeClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Surface(
@@ -105,16 +107,16 @@ fun GeminiTopBar(
                 }
             }
 
-            // Right Sparkle Badge Icon
+            // Right Voice Mode Button
             IconButton(
-                onClick = onModelSelectorClick,
+                onClick = onVoiceModeClick,
                 modifier = Modifier
                     .size(40.dp)
                     .clip(CircleShape)
             ) {
                 Icon(
-                    imageVector = Icons.Default.AutoAwesome,
-                    contentDescription = "Hermes Agent",
+                    imageVector = Icons.Default.Mic,
+                    contentDescription = "Voice Mode",
                     tint = GeminiBlue
                 )
             }

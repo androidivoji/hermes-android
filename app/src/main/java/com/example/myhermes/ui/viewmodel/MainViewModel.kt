@@ -10,6 +10,7 @@ import com.example.myhermes.data.model.HermesModel
 import com.example.myhermes.data.model.HermesModelDefaults
 import com.example.myhermes.data.model.MessageSender
 import com.example.myhermes.data.repository.HermesRepository
+import com.example.myhermes.utils.NotificationHelper
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -173,6 +174,14 @@ class MainViewModel(
                     state.copy(
                         messages = existingMessages,
                         isGenerating = hermesMessage.isStreaming
+                    )
+                }
+
+                if (!hermesMessage.isStreaming && hermesMessage.text.isNotBlank()) {
+                    NotificationHelper.showAiReplyNotification(
+                        getApplication(),
+                        "Hermes (${_uiState.value.selectedModel.name})",
+                        hermesMessage.text
                     )
                 }
             }
