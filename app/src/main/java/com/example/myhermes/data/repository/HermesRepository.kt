@@ -45,42 +45,51 @@ class HermesRepository {
      */
     suspend fun fetchAvailableModels(): List<HermesModel> = withContext(Dispatchers.IO) {
         val url = "$BASE_URL/models"
-        Log.d(TAG, "--> GET $url")
+        val maxRetries = 3
+        var currentAttempt = 0
 
-        val request = Request.Builder()
-            .url(url)
-            .addHeader("Authorization", "Bearer $API_KEY")
-            .get()
-            .build()
+        while (currentAttempt < maxRetries) {
+            currentAttempt++
+            Log.d(TAG, "--> GET $url (Percobaan $currentAttempt dari $maxRetries)")
 
-        try {
-            val response = client.newCall(request).execute()
-            val bodyString = response.body?.string() ?: ""
-            Log.d(TAG, "<-- GET /v1/models Code: ${response.code}, Body: $bodyString")
+            val request = Request.Builder()
+                .url(url)
+                .addHeader("Authorization", "Bearer $API_KEY")
+                .get()
+                .build()
 
-            if (response.isSuccessful && bodyString.isNotEmpty()) {
-                val jsonObject = gson.fromJson(bodyString, JsonObject::class.java)
-                val dataArray = jsonObject.getAsJsonArray("data")
-                if (dataArray != null && dataArray.size() > 0) {
-                    val fetchedModels = mutableListOf<HermesModel>()
-                    for (element in dataArray) {
-                        val modelObj = element.asJsonObject
-                        val modelId = modelObj.get("id").asString
-                        fetchedModels.add(
-                            HermesModel(
-                                id = modelId,
-                                name = modelId,
-                                description = "Model terdaftar pada server ($modelId)",
-                                tag = "Online"
+            try {
+                val response = client.newCall(request).execute()
+                val bodyString = response.body?.string() ?: ""
+                Log.d(TAG, "<-- GET /v1/models Code: ${response.code}, Body: $bodyString")
+
+                if (response.isSuccessful && bodyString.isNotEmpty()) {
+                    val jsonObject = gson.fromJson(bodyString, JsonObject::class.java)
+                    val dataArray = jsonObject.getAsJsonArray("data")
+                    if (dataArray != null && dataArray.size() > 0) {
+                        val fetchedModels = mutableListOf<HermesModel>()
+                        for (element in dataArray) {
+                            val modelObj = element.asJsonObject
+                            val modelId = modelObj.get("id").asString
+                            fetchedModels.add(
+                                HermesModel(
+                                    id = modelId,
+                                    name = modelId,
+                                    description = "Model terdaftar pada server ($modelId)",
+                                    tag = "Online"
+                                )
                             )
-                        )
+                        }
+                        Log.d(TAG, "Berhasil mendapatkan ${fetchedModels.size} model dari server!")
+                        return@withContext fetchedModels
                     }
-                    Log.d(TAG, "Berhasil mendapatkan ${fetchedModels.size} model dari server!")
-                    return@withContext fetchedModels
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Percobaan $currentAttempt gagal mengambil daftar model: ${e.message}")
+                if (currentAttempt < maxRetries) {
+                    kotlinx.coroutines.delay(2000L)
                 }
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Gagal mengambil daftar model dari /v1/models", e)
         }
         emptyList()
     }
@@ -160,131 +169,152 @@ class HermesRepository {
 
         var accumulatedText = ""
         var accumulatedThought = ""
+        val maxRetries = 3
+        var currentAttempt = 0
+        var success = false
 
-        try {
-            val response = client.newCall(request).execute()
+        while (currentAttempt < maxRetries && !success) {
+            currentAttempt++
+            try {
+                if (currentAttempt > 1) {
+                    emit(initialMessage.copy(text = "Menghubungkan kembali ke Hermes Agent (Percobaan $currentAttempt/$maxRetries)..."))
+                    kotlinx.coroutines.delay(2000L)
+                }
 
-            Log.d(TAG, "<-- HTTP Response Status: ${response.code} ${response.message}")
+                val response = client.newCall(request).execute()
 
-            if (!response.isSuccessful) {
-                val errorBody = response.body?.string() ?: "Unknown server error"
-                val errorText = "HTTP Error ${response.code}: $errorBody"
-                Log.e(TAG, "<-- HTTP ERROR [${response.code}]: $errorBody")
+                Log.d(TAG, "<-- HTTP Response Status: ${response.code} ${response.message}")
+
+                if (!response.isSuccessful) {
+                    val errorBody = response.body?.string() ?: "Unknown server error"
+                    val errorText = "HTTP Error ${response.code}: $errorBody"
+                    Log.e(TAG, "<-- HTTP ERROR [${response.code}]: $errorBody")
+
+                    if (currentAttempt == maxRetries) {
+                        emit(
+                            initialMessage.copy(
+                                text = errorText,
+                                isStreaming = false
+                            )
+                        )
+                        return@flow
+                    }
+                    continue
+                }
+
+                val body = response.body
+                if (body == null) {
+                    Log.e(TAG, "<-- Response body is null!")
+                    if (currentAttempt == maxRetries) {
+                        emit(initialMessage.copy(text = "Response body is empty", isStreaming = false))
+                        return@flow
+                    }
+                    continue
+                }
+
+                success = true
+                val reader = BufferedReader(InputStreamReader(body.byteStream()))
+                var line: String?
+
+                Log.d(TAG, "--- Mulai Membaca Stream Response (SSE) ---")
+
+                while (reader.readLine().also { line = it } != null) {
+                    val currentLine = line?.trim() ?: continue
+                    if (currentLine.isEmpty() || currentLine.startsWith(":")) continue
+
+                    if (currentLine.startsWith("data:")) {
+                        val dataContent = currentLine.removePrefix("data:").trim()
+                        if (dataContent == "[DONE]") {
+                            Log.d(TAG, "SSE Stream Completed ([DONE])")
+                            break
+                        }
+
+                        try {
+                            val jsonObject = gson.fromJson(dataContent, JsonObject::class.java)
+                            val choices = jsonObject.getAsJsonArray("choices")
+                            if (choices != null && choices.size() > 0) {
+                                val choiceObj = choices.get(0).asJsonObject
+                                val delta = choiceObj.getAsJsonObject("delta")
+                                val messageObj = choiceObj.getAsJsonObject("message")
+
+                                var hasChunkUpdate = false
+
+                                val reasoningChunk = when {
+                                    delta != null && delta.has("reasoning") && !delta.get("reasoning").isJsonNull -> delta.get("reasoning").asString
+                                    delta != null && delta.has("reasoning_content") && !delta.get("reasoning_content").isJsonNull -> delta.get("reasoning_content").asString
+                                    delta != null && delta.has("thinking") && !delta.get("thinking").isJsonNull -> delta.get("thinking").asString
+                                    else -> ""
+                                }
+
+                                val contentChunk = when {
+                                    delta != null && delta.has("content") && !delta.get("content").isJsonNull -> delta.get("content").asString
+                                    messageObj != null && messageObj.has("content") && !messageObj.get("content").isJsonNull -> messageObj.get("content").asString
+                                    else -> ""
+                                }
+
+                                if (reasoningChunk.isNotEmpty()) {
+                                    accumulatedThought += reasoningChunk
+                                    hasChunkUpdate = true
+                                }
+
+                                if (contentChunk.isNotEmpty()) {
+                                    accumulatedText += contentChunk
+                                    hasChunkUpdate = true
+                                }
+
+                                if (hasChunkUpdate) {
+                                    emit(
+                                        initialMessage.copy(
+                                            text = if (accumulatedText.isNotEmpty()) accumulatedText else "Hermes Agent sedang menganalisis gambar...",
+                                            thoughtProcess = if (accumulatedThought.isNotEmpty()) accumulatedThought else initialMessage.thoughtProcess,
+                                            isStreaming = true
+                                        )
+                                    )
+                                }
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Gagal memproses JSON SSE chunk: ${e.message}")
+                        }
+                    }
+                }
+
+                if (accumulatedText.isEmpty() && accumulatedThought.isNotEmpty()) {
+                    accumulatedText = accumulatedThought
+                } else if (accumulatedText.isEmpty()) {
+                    accumulatedText = "Respon dari Hermes Agent berhasil diterima."
+                }
+
+                Log.d(TAG, "==================================================")
+                Log.d(TAG, "<-- FULL RESPONSE TEXT SUCCESS:")
+                Log.d(TAG, accumulatedText)
+                Log.d(TAG, "==================================================")
 
                 emit(
                     initialMessage.copy(
-                        text = errorText,
+                        text = accumulatedText,
+                        thoughtProcess = if (accumulatedThought.isNotEmpty()) accumulatedThought else initialMessage.thoughtProcess,
                         isStreaming = false
                     )
                 )
-                return@flow
-            }
 
-            val body = response.body
-            if (body == null) {
-                Log.e(TAG, "<-- Response body is null!")
-                emit(initialMessage.copy(text = "Response body is empty", isStreaming = false))
-                return@flow
-            }
+            } catch (e: Exception) {
+                Log.w(TAG, "Percobaan $currentAttempt gagal terhubung: ${e.message}")
+                if (currentAttempt == maxRetries) {
+                    Log.e(TAG, "=================== EXCEPTION ===================", e)
 
-            val reader = BufferedReader(InputStreamReader(body.byteStream()))
-            var line: String?
+                    val failureText = """
+                        ⚠️ Gagal terhubung ke Hermes Agent (139.190.99.102:20128) setelah $maxRetries kali percobaan.
+                        Detail Error: ${e.localizedMessage ?: e.message}
+                    """.trimIndent()
 
-            Log.d(TAG, "--- Mulai Membaca Stream Response (SSE) ---")
-
-            while (reader.readLine().also { line = it } != null) {
-                val currentLine = line?.trim() ?: continue
-                if (currentLine.isEmpty() || currentLine.startsWith(":")) continue
-
-                if (currentLine.startsWith("data:")) {
-                    val dataContent = currentLine.removePrefix("data:").trim()
-                    if (dataContent == "[DONE]") {
-                        Log.d(TAG, "SSE Stream Completed ([DONE])")
-                        break
-                    }
-
-                    try {
-                        val jsonObject = gson.fromJson(dataContent, JsonObject::class.java)
-                        val choices = jsonObject.getAsJsonArray("choices")
-                        if (choices != null && choices.size() > 0) {
-                            val choiceObj = choices.get(0).asJsonObject
-                            val delta = choiceObj.getAsJsonObject("delta")
-                            val messageObj = choiceObj.getAsJsonObject("message")
-
-                            var hasChunkUpdate = false
-
-                            val reasoningChunk = when {
-                                delta != null && delta.has("reasoning") && !delta.get("reasoning").isJsonNull -> delta.get("reasoning").asString
-                                delta != null && delta.has("reasoning_content") && !delta.get("reasoning_content").isJsonNull -> delta.get("reasoning_content").asString
-                                delta != null && delta.has("thinking") && !delta.get("thinking").isJsonNull -> delta.get("thinking").asString
-                                else -> ""
-                            }
-
-                            val contentChunk = when {
-                                delta != null && delta.has("content") && !delta.get("content").isJsonNull -> delta.get("content").asString
-                                messageObj != null && messageObj.has("content") && !messageObj.get("content").isJsonNull -> messageObj.get("content").asString
-                                else -> ""
-                            }
-
-                            if (reasoningChunk.isNotEmpty()) {
-                                accumulatedThought += reasoningChunk
-                                hasChunkUpdate = true
-                            }
-
-                            if (contentChunk.isNotEmpty()) {
-                                accumulatedText += contentChunk
-                                hasChunkUpdate = true
-                            }
-
-                            if (hasChunkUpdate) {
-                                emit(
-                                    initialMessage.copy(
-                                        text = if (accumulatedText.isNotEmpty()) accumulatedText else "Hermes Agent sedang menganalisis gambar...",
-                                        thoughtProcess = if (accumulatedThought.isNotEmpty()) accumulatedThought else initialMessage.thoughtProcess,
-                                        isStreaming = true
-                                    )
-                                )
-                            }
-                        }
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Gagal memproses JSON SSE chunk: ${e.message}")
-                    }
+                    emit(
+                        initialMessage.copy(
+                            text = failureText,
+                            isStreaming = false
+                        )
+                    )
                 }
             }
-
-            if (accumulatedText.isEmpty() && accumulatedThought.isNotEmpty()) {
-                accumulatedText = accumulatedThought
-            } else if (accumulatedText.isEmpty()) {
-                accumulatedText = "Respon dari Hermes Agent berhasil diterima."
-            }
-
-            Log.d(TAG, "==================================================")
-            Log.d(TAG, "<-- FULL RESPONSE TEXT SUCCESS:")
-            Log.d(TAG, accumulatedText)
-            Log.d(TAG, "==================================================")
-
-            emit(
-                initialMessage.copy(
-                    text = accumulatedText,
-                    thoughtProcess = if (accumulatedThought.isNotEmpty()) accumulatedThought else initialMessage.thoughtProcess,
-                    isStreaming = false
-                )
-            )
-
-        } catch (e: Exception) {
-            Log.e(TAG, "=================== EXCEPTION ===================", e)
-
-            val failureText = """
-                ⚠️ Gagal terhubung ke Hermes Agent (139.190.99.102:20128).
-                Detail Error: ${e.localizedMessage ?: e.message}
-            """.trimIndent()
-
-            emit(
-                initialMessage.copy(
-                    text = failureText,
-                    isStreaming = false
-                )
-            )
         }
     }.flowOn(Dispatchers.IO)
 }
